@@ -64,6 +64,7 @@
       filter = lib.fileset.unions [
         ./deny.toml
         ./.rustfmt.toml
+        ./ts_ffi/cbindgen.toml
         ./ts_netstack_smoltcp/examples/axum_tun
         ./examples/axum
         (lib.fileset.fileFilter (file: file.hasExt "rs") ./.)
@@ -114,6 +115,25 @@
       });
 
       crates' = builtins.listToAttrs crates;
+      crates'' = crates' // {
+        ts_ffi = let
+          with_header = crates'.ts_ffi.overrideAttrs (prevAttrs: {
+            doCheck = false;
+
+            postInstall = ''
+              mkdir -p $out/include
+              cp -v ts_ffi/tailscale.h $out/include
+            '';
+          });
+
+        in with_header.overrideAttrs (prevAttrs: {
+          passthru = (prevAttrs.passthru or {} // {
+            examples = pkgs.callPackage ./ts_ffi/examples {
+              libtailscalers = with_header;
+            };
+          });
+        });
+      };
 
       workspace = pkgs.craneLib.buildPackage (deps.passthru.buildDeps // {
         pname = "tailscale-rs-wksp";
@@ -134,12 +154,14 @@
         };
       });
 
-    in crates' // ({
+    in crates'' // ({
       deps = deps;
       docs = docs;
       doc = docs;
       workspace = workspace;
       default = workspace;
+
+      libtailscalers = crates''.ts_ffi;
     });
 
   in inputs.flake-parts.lib.mkFlake { inputs = inputs; } {
@@ -258,6 +280,10 @@
 
           cargo-flamegraph
           heaptrack
+
+          # for ffi
+          gnumake
+          stdenv.cc
         ];
       };
     };

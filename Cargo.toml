@@ -17,6 +17,7 @@ members = [
     "ts_disco_protocol",
     "ts_dynbitset",
     "ts_elixir/native/ts_elixir",
+    "ts_ffi",
     "ts_hexdump",
     "ts_http_util",
     "ts_keys",

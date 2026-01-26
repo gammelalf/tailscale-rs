@@ -1,0 +1,3 @@
+/tailscale.h
+tcp_echo
+udp_ping
