@@ -4,8 +4,15 @@ use netstack::netcore;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// Internal operation failed, likely a bug.
-    #[error("internal operation failed, likely a bug")]
+    #[error("internal operation returned an error")]
     InternalFailure,
+
+    /// The runtime state was degraded: a component that we expected to be able to
+    /// communicate with hung up or could not be reached.
+    ///
+    /// This usually means that an internal component has panicked or is wedged.
+    #[error("runtime degraded, component unreachable")]
+    RuntimeDegraded,
 
     /// An operation timed out.
     #[error("operation timed out")]
@@ -18,9 +25,12 @@ pub enum Error {
 
 impl From<ts_runtime::Error> for Error {
     fn from(value: ts_runtime::Error) -> Self {
-        match value {
-            ts_runtime::Error::Timeout => Error::Timeout,
-            ts_runtime::Error::RuntimeState => Error::InternalFailure,
+        match value.kind {
+            ts_runtime::ErrorKind::Timeout => Error::Timeout,
+            ts_runtime::ErrorKind::ActorGone => Error::RuntimeDegraded,
+            ts_runtime::ErrorKind::MailboxFull | ts_runtime::ErrorKind::ReplyErr => {
+                Error::InternalFailure
+            }
         }
     }
 }
@@ -28,8 +38,9 @@ impl From<ts_runtime::Error> for Error {
 impl From<netcore::Error> for Error {
     fn from(value: netcore::Error) -> Self {
         match value {
+            netcore::Error::ChannelClosed => Error::RuntimeDegraded,
+
             netcore::Error::WrongType
-            | netcore::Error::ChannelClosed
             | netcore::Error::BadRequest
             | netcore::Error::InvariantViolated => Error::InternalFailure,
 

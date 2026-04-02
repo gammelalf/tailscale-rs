@@ -30,7 +30,7 @@ mod route_updater;
 mod src_filter;
 
 pub(crate) use env::Env;
-pub use error::Error;
+pub use error::{Error, ErrorKind};
 
 /// The runtime for a tailscale device.
 pub struct Runtime {
@@ -87,7 +87,11 @@ impl Runtime {
         let (channel,) = self
             .netstack
             .upgrade()
-            .ok_or(Error::RuntimeState)?
+            .ok_or(Error {
+                kind: ErrorKind::ActorGone,
+                target_actor: None,
+                message_ty: None,
+            })?
             .ask(netstack_actor::GetChannel)
             .await?;
 

@@ -7,7 +7,7 @@ use kameo::{
 use kameo_actors::message_bus::{MessageBus, Publish, Register};
 use tokio::sync::watch;
 
-use crate::Error;
+use crate::{Error, error::ResultExt};
 
 #[derive(Clone)]
 pub struct Env {
@@ -40,7 +40,8 @@ impl Env {
     {
         self.bus
             .tell(Register(slf.clone().recipient::<M>()))
-            .await?;
+            .await
+            .with_actor_info(&self.bus)?;
 
         Ok(())
     }
@@ -49,7 +50,10 @@ impl Env {
     where
         M: Clone + Send + 'static,
     {
-        self.bus.tell(Publish(msg)).await?;
+        self.bus
+            .tell(Publish(msg))
+            .await
+            .with_actor_info(&self.bus)?;
 
         Ok(())
     }
