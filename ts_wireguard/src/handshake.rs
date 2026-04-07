@@ -6,10 +6,12 @@ use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use hkdf::SimpleHkdf;
 use ts_keys::{NodeKeyPair, NodePrivateKey, NodePublicKey};
 use ts_packet::old::PacketMut;
+use ts_time::Handle;
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::{
     config::Psk,
+    endpoint::Event,
     macs::{MACReceiver, MACSender, Mac},
     messages::*,
     session::{ReceiveSession, TransmitSession},
@@ -71,7 +73,7 @@ fn must_hkdf3(chaining_key: &[u8; 32], key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 
 }
 
 impl Handshake {
-    fn new(responder_static: &NodePublicKey) -> Handshake {
+    fn new(responder_static: NodePublicKey) -> Handshake {
         // TODO: precompute initial hash and chaining key, unless the compiler
         // is clever enough to figure it out by itself?
         let init = Blake2s256::digest("Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s");
@@ -231,7 +233,7 @@ impl ReceivedHandshake {
         let my_static_dalek = x25519_dalek::StaticSecret::from(my_static.private);
         let mut peer_static_bytes = [0; 32];
         let mut timestamp = TAI64N::new_zeroed();
-        let handshake = Handshake::new(&my_static.public)
+        let handshake = Handshake::new(my_static.public)
             .mix_hash(&pkt.ephemeral_pub) // e
             .mix_key(&pkt.ephemeral_pub) // e (extra mixing required by psk variant)
             .mix_key(my_static_dalek.diffie_hellman(&peer_ephemeral).as_bytes()) // es (reversed because this is the responder)
@@ -298,13 +300,51 @@ impl ReceivedHandshake {
     }
 }
 
+/// Generate a handshake initiation message for a peer.
+pub fn initiate_handshake(
+    endpoint_static: NodePrivateKey,
+    peer_static: NodePublicKey,
+    session_id: SessionId,
+    timestamp: TAI64N,
+) -> (SentHandshake, HandshakeInitiation) {
+    let ephemeral = x25519_dalek::ReusableSecret::random();
+    let ephemeral_pub = x25519_dalek::PublicKey::from(&ephemeral);
+    let endpoint_static_pub = NodePublicKey::from(endpoint_static);
+
+    let mut pkt = HandshakeInitiation {
+        sender_id: session_id,
+        ephemeral_pub: ephemeral_pub.to_bytes(),
+        ..Default::default()
+    };
+
+    let handshake = Handshake::new(peer_static)
+        .mix_hash(ephemeral_pub.as_bytes()) // e
+        .mix_key(ephemeral_pub.as_bytes()) // e (extra mixing required by psk variant)
+        .mix_key(ephemeral.diffie_hellman(&peer_static.into()).as_bytes()) // es
+        .encrypt(endpoint_static_pub.as_bytes(), &mut pkt.static_pub_sealed) // s
+        .mix_key(
+            x25519_dalek::StaticSecret::from(endpoint_static)
+                .diffie_hellman(&peer_static.into())
+                .as_bytes(),
+        ) // ss
+        .encrypt(timestamp.as_bytes(), &mut pkt.timestamp_sealed); // payload
+
+    let ret = SentHandshake {
+        id: session_id,
+        my_ephemeral: ephemeral,
+        my_static: endpoint_static,
+        handshake,
+    };
+
+    (ret, pkt)
+}
+
 /// A partially completed sent handshake.
 pub struct SentHandshake {
     pub id: SessionId,
     my_ephemeral: x25519_dalek::ReusableSecret,
     my_static: NodePrivateKey,
     handshake: Handshake,
-    handshake_mac1: Mac,
 }
 
 pub struct SessionPair {
@@ -312,99 +352,156 @@ pub struct SessionPair {
     pub recv: ReceiveSession,
 }
 
-impl SentHandshake {
-    /// Generate a handshake initiation message for a peer.
-    pub fn new(
-        my_static: &NodePrivateKey,
-        peer_static: &NodePublicKey,
+/// State of a handshake with a peer.
+pub(crate) enum HandshakeState {
+    /// No handshake in progress.
+    None,
+    /// We are the initiator, awaiting a response.
+    ///
+    /// Second field is the timeout for the handshake.
+    Initiated(SentHandshake, Handle<Event>, Mac),
+    /// We are the responder, awaiting an initial transport
+    /// message to confirm the new session.
+    Responded(Box<SessionPair>),
+}
+
+impl HandshakeState {
+    pub(crate) fn is_active(&self) -> bool {
+        !matches!(self, HandshakeState::None)
+    }
+
+    /// Return the session id of the handshake, if any.
+    pub(crate) fn session_id(&self) -> Option<SessionId> {
+        match self {
+            HandshakeState::Initiated(handshake, ..) => Some(handshake.id),
+            HandshakeState::Responded(tentative) => Some(tentative.recv.id()),
+            HandshakeState::None => None,
+        }
+    }
+
+    /// Respond to a peer's handshake initiation, and switch to the responder state to await
+    /// session confirmation.
+    ///
+    /// Responding replaces any other handshake state unconditionally.
+    pub(crate) fn respond(
+        &mut self,
         session_id: SessionId,
-        macs: &MACSender,
-        timestamp: TAI64N,
-    ) -> (Self, PacketMut) {
-        let ephemeral = x25519_dalek::ReusableSecret::random();
-        let ephemeral_pub = x25519_dalek::PublicKey::from(&ephemeral);
-        let my_static_pub = NodePublicKey::from(*my_static);
-
-        let mut pkt = HandshakeInitiation {
-            sender_id: session_id,
-            ephemeral_pub: ephemeral_pub.to_bytes(),
-            ..Default::default()
-        };
-
-        let handshake = Handshake::new(peer_static)
-            .mix_hash(ephemeral_pub.as_bytes()) // e
-            .mix_key(ephemeral_pub.as_bytes()) // e (extra mixing required by psk variant)
-            .mix_key(ephemeral.diffie_hellman(&peer_static.into()).as_bytes()) // es
-            .encrypt(my_static_pub.as_bytes(), &mut pkt.static_pub_sealed) // s
-            .mix_key(
-                x25519_dalek::StaticSecret::from(my_static)
-                    .diffie_hellman(&peer_static.into())
-                    .as_bytes(),
-            ) // ss
-            .encrypt(timestamp.as_bytes(), &mut pkt.timestamp_sealed); // payload
-
-        let mut packet = PacketMut::from(pkt.as_bytes());
-        let handshake_mac1 = macs.write_macs(packet.as_mut());
-
-        let ret = SentHandshake {
-            id: session_id,
-            my_ephemeral: ephemeral,
-            my_static: *my_static,
-            handshake,
-            handshake_mac1,
-        };
-
-        (ret, packet)
-    }
-
-    /// Process a received cookie reply message.
-    pub fn cookie_reply(&mut self, macs: &mut MACSender, cookie: &CookieReply) {
-        macs.receive_cookie(cookie, &self.handshake_mac1);
-    }
-
-    /// Finalize the handshake.
-    pub fn finish(
-        self,
-        pkt: &HandshakeResponse,
+        handshake: ReceivedHandshake,
         psk: &Psk,
-        macs: &MACReceiver,
+        cookie_sender: &MACSender,
         now: Instant,
-    ) -> Result<SessionPair, Box<SentHandshake>> {
-        if !macs.verify_macs(pkt.as_bytes()) {
-            return Err(Box::new(self));
+    ) -> PacketMut {
+        // TODO: tie-breaker for simultaneous initiation.
+        // When both peers initiate simultaneously, it's possible to get into a sticky situation
+        // where each peer completes their own initiation based on the other's response, and in
+        // so doing end up on completely different session keys that will never be confirmed.
+        // We need to resolve the conflict one way or another to avoid this race.
+        //
+        // However, in practice the race is vanishingly rare unless you somehow externally
+        // synchronize the peers to start handshaking at exactly the same time. So, the code is
+        // usable without this race avoidance logic.
+        //
+        // We may also be able to resolve this race with a 4th handshake state wherein we are
+        // simultaneously initiator and responder, and temporarily exist in quantum superposition
+        // until confirmation packets collapse the state again.
+        let (session, packet) = handshake.respond(session_id, psk, cookie_sender, now);
+        *self = HandshakeState::Responded(Box::new(session));
+        packet
+    }
+
+    /// Finish a handshake as the initiator, returning the newly established sessions.
+    ///
+    /// The handshake state is unchanged if the handshake cannot complete, either because
+    /// it's not in an appropriate state or because the handshake response isn't a valid
+    /// completion of the handshake.
+    pub(crate) fn finish(
+        &mut self,
+        packet: &HandshakeResponse,
+        psk: &Psk,
+        cookies: &MACReceiver,
+        now: Instant,
+    ) -> Option<SessionPair> {
+        let HandshakeState::Initiated(sent_handshake, ..) = self else {
+            return None;
         };
 
-        let peer_ephemeral = x25519_dalek::PublicKey::from(pkt.ephemeral_pub);
-        let mut empty = vec![];
-        let handshake = self.handshake.clone();
+        if !cookies.verify_macs(packet.as_bytes()) {
+            return None;
+        };
+
+        let peer_ephemeral = x25519_dalek::PublicKey::from(packet.ephemeral_pub);
+        let handshake = sent_handshake.handshake.clone();
         let session_keys = handshake
-            .mix_hash(&pkt.ephemeral_pub) // e
-            .mix_key(&pkt.ephemeral_pub) // e (extra mixing required by psk variant)
-            .mix_key(self.my_ephemeral.diffie_hellman(&peer_ephemeral).as_bytes()) // ee
+            .mix_hash(&packet.ephemeral_pub) // e
+            .mix_key(&packet.ephemeral_pub) // e (extra mixing required by psk variant)
             .mix_key(
-                x25519_dalek::StaticSecret::from(self.my_static)
+                sent_handshake
+                    .my_ephemeral
+                    .diffie_hellman(&peer_ephemeral)
+                    .as_bytes(),
+            ) // ee
+            .mix_key(
+                x25519_dalek::StaticSecret::from(sent_handshake.my_static)
                     .diffie_hellman(&peer_ephemeral)
                     .as_bytes(),
             ) // se
             .mix_psk(psk) // psk
-            .decrypt(&pkt.auth_tag, &mut empty) // payload (empty, but must decrypt to verify auth tag)
-            .map(|handshake| handshake.finish());
+            .decrypt(&packet.auth_tag, &mut Vec::new()) // payload (empty, but must decrypt to verify auth tag)
+            .map(|handshake| handshake.finish())?;
 
-        match session_keys {
-            None => Err(Box::new(self)),
-            Some(session_keys) => {
-                let send =
-                    TransmitSession::new(session_keys.initiator_to_responder, pkt.sender_id, now);
-                let recv = ReceiveSession::new(session_keys.responder_to_initiator, self.id, now);
-                Ok(SessionPair { send, recv })
-            }
+        let send = TransmitSession::new(session_keys.initiator_to_responder, packet.sender_id, now);
+        let recv = ReceiveSession::new(session_keys.responder_to_initiator, sent_handshake.id, now);
+
+        let HandshakeState::Initiated(_, timeout, _) =
+            std::mem::replace(self, HandshakeState::None)
+        else {
+            unreachable!();
+        };
+        timeout.cancel();
+
+        Some(SessionPair { send, recv })
+    }
+
+    /// Confirm a handshake as responder, using the provided ciphertext packets.
+    ///
+    /// A tentative session becomes confirmed when it successfully decrypts its first packet.
+    ///
+    /// The handshake state is unchanged if the handshake cannot be confirmed, either because it's
+    /// not in an appropriate state or because no packet successfully decrypted.
+    ///
+    /// Upon successful confirmation, returns the newly established sessions as well as the one
+    /// or more packets that decrypted successfully
+    pub(crate) fn confirm(
+        &mut self,
+        session_id: SessionId,
+        mut packets: Vec<PacketMut>,
+    ) -> Option<(SessionPair, Vec<PacketMut>)> {
+        let HandshakeState::Responded(tentative) = self else {
+            return None;
+        };
+
+        if tentative.recv.id() != session_id {
+            return None;
+        };
+
+        packets = tentative.recv.decrypt(packets);
+        if packets.is_empty() {
+            return None;
         }
+
+        let HandshakeState::Responded(tentative) = std::mem::replace(self, HandshakeState::None)
+        else {
+            unreachable!();
+        };
+
+        Some((*tentative, packets))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use ts_keys::NodeKeyPair;
+    use ts_time::Scheduler;
     use zerocopy::TryFromBytes;
 
     use super::*;
@@ -419,13 +516,18 @@ mod tests {
         let a_mac_recv = MACReceiver::new(&a_static.public);
         let a_session = SessionId::random(); // A wants to receive at this ID
         let a_init_time = TAI64N::now();
-        let (a_handshake, init_pkt) = SentHandshake::new(
-            &a_static.private,
-            &b_static.public,
-            a_session,
-            &a_mac_send,
-            a_init_time,
+        let (a_handshake, init_pkt) =
+            initiate_handshake(a_static.private, b_static.public, a_session, a_init_time);
+
+        let mut init_pkt = PacketMut::from(init_pkt.as_bytes());
+        let handshake_mac = a_mac_send.write_macs(init_pkt.as_mut());
+
+        let mut scheduler = Scheduler::default();
+        let timeout = scheduler.add(
+            ts_time::TimeRange::new_around(Instant::now(), std::time::Duration::from_secs(1000)),
+            crate::Event::HandshakeTimeout(crate::config::PeerId(0)),
         );
+        let mut a_handshake = HandshakeState::Initiated(a_handshake, timeout, handshake_mac);
 
         // Peer B receives it and responds
         let init_pkt = HandshakeInitiation::try_ref_from_bytes(init_pkt.as_ref())
@@ -443,7 +545,7 @@ mod tests {
         // Peer A receives response
         let response_pkt = HandshakeResponse::try_ref_from_bytes(response_pkt.as_ref())
             .expect("response_pkt is a valid handshake response message");
-        let Ok(a_session) = a_handshake.finish(response_pkt, &psk, &a_mac_recv, Instant::now())
+        let Some(a_session) = a_handshake.finish(response_pkt, &psk, &a_mac_recv, Instant::now())
         else {
             panic!("failed to process handshake response from peer B");
         };
