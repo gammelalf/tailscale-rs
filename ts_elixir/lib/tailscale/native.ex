@@ -152,4 +152,10 @@ defmodule Tailscale.Native do
   """
   @spec ipv6_addr(device()) :: {:ok, :inet.ip6_address()} | {:error, any()}
   def ipv6_addr(_dev), do: err()
+
+  @doc """
+  Retrieve a peer by name.
+  """
+  @spec peer_by_name(device(), String.t()) :: {:ok, %{} | nil} | {:error, any()}
+  def peer_by_name(_dev, _name), do: err()
 end

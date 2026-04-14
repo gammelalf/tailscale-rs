@@ -74,4 +74,12 @@ defmodule Tailscale do
   See `:inet.ntoa` to format to a string.
   """
   def ipv6_addr(dev), do: Tailscale.Native.ipv6_addr(dev)
+
+  @spec peer_by_name(t(), String.t()) :: {:ok, Tailscale.NodeInfo.t() | nil} | {:error, any()}
+  @doc """
+  Look up a peer by name.
+
+  Returns `{:ok, nil}` if there was no such peer. `:error` if the lookup encountered an error.
+  """
+  def peer_by_name(dev, name), do: Tailscale.Native.peer_by_name(dev, name)
 end

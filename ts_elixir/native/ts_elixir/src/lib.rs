@@ -28,6 +28,47 @@ struct Device {
     inner: Arc<tailscale::Device>,
 }
 
+#[derive(rustler::NifStruct)]
+#[module = "Tailscale.NodeInfo"]
+struct NodeInfo<'a> {
+    id: i64,
+    stable_id: String,
+    hostname: String,
+    tailnet: Option<String>,
+    tags: Vec<String>,
+    tailnet_addresses: Vec<Term<'a>>,
+    derp_region: Option<u32>,
+    node_key: String,
+    disco_key: Option<String>,
+    machine_key: Option<String>,
+    underlay_addresses: Vec<Term<'a>>,
+}
+
+impl<'a> NodeInfo<'a> {
+    fn from_node(env: rustler::Env<'a>, value: tailscale::NodeInfo) -> Self {
+        Self {
+            id: value.id,
+            stable_id: value.stable_id.0,
+            hostname: value.hostname,
+            tailnet: value.tailnet,
+            tags: value.tags,
+            tailnet_addresses: vec![
+                ip_to_erl(env, value.tailnet_address.ipv4.addr()),
+                ip_to_erl(env, value.tailnet_address.ipv6.addr()),
+            ],
+            derp_region: value.derp_region.map(|x| x.0.get()),
+            node_key: value.node_key.to_string(),
+            disco_key: value.disco_key.as_ref().map(ToString::to_string),
+            machine_key: value.machine_key.as_ref().map(ToString::to_string),
+            underlay_addresses: value
+                .underlay_addresses
+                .into_iter()
+                .map(|x| (ip_to_erl(env, x.ip()), x.port()).encode(env))
+                .collect(),
+        }
+    }
+}
+
 type Result<T> = core::result::Result<T, Box<dyn core::error::Error + Send + Sync + 'static>>;
 
 #[rustler::resource_impl]
@@ -100,6 +141,18 @@ fn ipv6_addr(env: rustler::Env<'_>, dev: ResourceArc<Device>) -> impl Encoder {
     match TOKIO_RUNTIME.block_on(dev.ipv6_addr()) {
         Err(e) => (atoms::error(), e.to_string()).encode(env),
         Ok(ip) => (atoms::ok(), ip_to_erl(env, ip)).encode(env),
+    }
+}
+
+#[rustler::nif(schedule = "DirtyIo")]
+fn peer_by_name(env: rustler::Env<'_>, dev: ResourceArc<Device>, name: &str) -> impl Encoder {
+    let dev = dev.inner.clone();
+    let name = name.to_owned();
+
+    match TOKIO_RUNTIME.block_on(async move { dev.peer_by_name(&name).await }) {
+        Err(e) => (atoms::error(), e.to_string()).encode(env),
+        Ok(None) => (atoms::ok(), Option::<()>::None).encode(env),
+        Ok(Some(peer)) => (atoms::ok(), NodeInfo::from_node(env, peer)).encode(env),
     }
 }
 
