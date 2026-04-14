@@ -69,6 +69,8 @@ mod error;
 pub use config::{BadFormatBehavior, Config, load_key_file};
 #[doc(inline)]
 pub use error::Error;
+#[doc(inline)]
+pub use ts_control::Node as NodeInfo;
 
 /// A tailscale device.
 pub struct Device {
@@ -154,6 +156,22 @@ impl Device {
             .tcp_connect((ip, ephemeral_port).into(), remote)
             .await
             .map_err(Into::into)
+    }
+
+    /// Look up a peer by name.
+    pub async fn peer_by_name(&self, name: &str) -> Result<Option<NodeInfo>, Error> {
+        let pt = self
+            .runtime
+            .peer_tracker
+            .upgrade()
+            .ok_or(Error::RuntimeDegraded)?;
+
+        pt.ask(ts_runtime::peer_tracker::PeerByName {
+            name: name.to_string(),
+        })
+        .await
+        .map_err(ts_runtime::Error::from)
+        .map_err(Into::into)
     }
 
     /// Attempt to gracefully shut down this device's runtime.

@@ -25,12 +25,14 @@ mod error;
 mod multiderp;
 mod netstack_actor;
 mod packetfilter;
-mod peer_tracker;
+pub mod peer_tracker;
 mod route_updater;
 mod src_filter;
 
 pub(crate) use env::Env;
 pub use error::{Error, ErrorKind};
+
+use crate::peer_tracker::PeerTracker;
 
 /// The runtime for a tailscale device.
 pub struct Runtime {
@@ -38,6 +40,8 @@ pub struct Runtime {
     pub control: ActorRef<ControlRunner>,
     dataplane: ActorRef<DataplaneActor>,
     netstack: WeakActorRef<NetstackActor>,
+    /// Reference to the peer state tracker actor, used for lookup.
+    pub peer_tracker: WeakActorRef<PeerTracker>,
     env: Env,
     shutdown: watch::Sender<bool>,
 }
@@ -62,7 +66,7 @@ impl Runtime {
         route_updater::RouteUpdater::spawn((multiderp.clone(), env.clone(), netstack_id));
         packetfilter::PacketfilterUpdater::spawn(env.clone());
         src_filter::SourceFilterUpdater::spawn(env.clone());
-        peer_tracker::PeerTracker::spawn(env.clone());
+        let peer_tracker = PeerTracker::spawn(env.clone()).downgrade();
 
         let netstack =
             NetstackActor::spawn((env.clone(), Default::default(), netstack_up, netstack_down));
@@ -76,6 +80,7 @@ impl Runtime {
         Ok(Self {
             control,
             dataplane,
+            peer_tracker,
             netstack: netstack.downgrade(),
             env,
             shutdown: shutdown_tx,

@@ -56,7 +56,9 @@ impl Node {
     /// Tailscale's control plane, this usually means `$HOST.tail1234.ts.net.`
     ///
     /// The `trailing_dot` parameter specifies whether to include the trailing dot in the
-    /// fqdn. This is the way the Go codebase formats this field.
+    /// fqdn. This is included by the definition of FQDN, and is the way the Go codebase
+    /// formats this field, but the parameter is included to allow turning it off for use
+    /// in contexts that expect it to be absent.
     pub fn fqdn(&self, trailing_dot: bool) -> String {
         let dot = if trailing_dot { "." } else { "" };
         match &self.tailnet {

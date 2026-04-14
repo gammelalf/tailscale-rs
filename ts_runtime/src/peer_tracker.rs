@@ -1,3 +1,5 @@
+//! Peer delta update tracking.
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -12,6 +14,7 @@ use ts_keys::NodePublicKey;
 
 use crate::{Error, env::Env};
 
+/// Actor that tracks peer delta updates and emits new states.
 pub struct PeerTracker {
     peers: HashMap<NodePublicKey, Node>,
     id_to_nodekey: HashMap<NodeId, NodePublicKey>,
@@ -33,8 +36,30 @@ impl kameo::Actor for PeerTracker {
     }
 }
 
+// For messages with arguments, a struct is generated with the args as fields. They aren't
+// documented, and we can't apply attributes directly to the fields. Hence, wrap in a module where
+// docs are turned off everywhere.
+#[allow(missing_docs)]
+mod msg_impl {
+    use super::*;
+
+    #[kameo::messages]
+    impl PeerTracker {
+        /// Lookup a peer by name.
+        #[message]
+        pub fn peer_by_name(&self, name: String) -> Option<Node> {
+            self.peers
+                .values()
+                .find(|&peer| peer.matches_name(&name))
+                .cloned()
+        }
+    }
+}
+
+pub use msg_impl::*;
+
 #[derive(Debug, Clone)]
-pub struct PeerState {
+pub(crate) struct PeerState {
     #[allow(unused)]
     pub deletions: HashSet<NodePublicKey>,
     #[allow(unused)]
