@@ -8,7 +8,7 @@ pub type Id = i64;
 
 /// The stable ID of a node.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StableId(String);
+pub struct StableId(pub String);
 
 /// A node in a tailnet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

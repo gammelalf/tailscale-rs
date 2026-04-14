@@ -15,8 +15,11 @@ extern crate tailscale as ts;
 type PyFut<'p> = PyResult<Bound<'p, PyAny>>;
 
 mod ip_or_str;
+mod node_info;
 mod tcp;
 mod udp;
+
+use node_info::NodeInfo;
 
 /// Tailscale API.
 #[pymodule]
@@ -142,6 +145,19 @@ impl Device {
         future_into_py(py, async move {
             let ip = dev.ipv6_addr().await.map_err(py_value_err)?;
             Ok(ip)
+        })
+    }
+
+    /// Look up info about a peer by its name.
+    ///
+    /// `name` may be an unqualified hostname or a fully-qualified name.
+    pub fn peer_by_name<'p>(&self, py: Python<'p>, name: String) -> PyFut<'p> {
+        let dev = self.dev.clone();
+
+        future_into_py(py, async move {
+            let node = dev.peer_by_name(&name).await.map_err(py_value_err)?;
+
+            Ok(node.map(|node| NodeInfo::from(&node)))
         })
     }
 }
