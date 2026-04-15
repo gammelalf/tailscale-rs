@@ -1,6 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-use core::str::FromStr;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{Arc, Once},
@@ -9,10 +8,13 @@ use std::{
 use pyo3::{exceptions::PyValueError, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 
+use crate::ip_or_str::IpRepr;
+
 extern crate tailscale as ts;
 
 type PyFut<'p> = PyResult<Bound<'p, PyAny>>;
 
+mod ip_or_str;
 mod tcp;
 mod udp;
 
@@ -63,12 +65,12 @@ impl Device {
     /// Bind a new UDP socket on the given `addr`.
     ///
     /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-    pub fn udp_bind<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+    pub fn udp_bind<'p>(&self, py: Python<'p>, addr: (IpRepr, u16)) -> PyFut<'p> {
         let dev = self.dev.clone();
-        let ip = IpAddr::from_str(addr.0);
+        let ip: Result<IpAddr, _> = addr.0.try_into();
 
         future_into_py(py, async move {
-            let ip = ip.map_err(py_value_err)?;
+            let ip = ip?;
 
             let sock = dev
                 .udp_bind((ip, addr.1).into())
@@ -84,12 +86,12 @@ impl Device {
     /// Bind a new TCP listen socket on the given `addr` and `port`.
     ///
     /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-    pub fn tcp_listen<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+    pub fn tcp_listen<'p>(&self, py: Python<'p>, addr: (IpRepr, u16)) -> PyFut<'p> {
         let dev = self.dev.clone();
-        let ip = IpAddr::from_str(addr.0);
+        let ip: Result<IpAddr, _> = addr.0.try_into();
 
         future_into_py(py, async move {
-            let ip = ip.map_err(py_value_err)?;
+            let ip = ip?;
 
             let listener = dev
                 .tcp_listen((ip, addr.1).into())
@@ -105,12 +107,12 @@ impl Device {
     /// Create a new TCP connection to the given `addr`.
     ///
     /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-    pub fn tcp_connect<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+    pub fn tcp_connect<'p>(&self, py: Python<'p>, addr: (IpRepr, u16)) -> PyFut<'p> {
         let dev = self.dev.clone();
-        let ip = IpAddr::from_str(addr.0);
+        let ip: Result<IpAddr, _> = addr.0.try_into();
 
         future_into_py(py, async move {
-            let ip = ip.map_err(py_value_err)?;
+            let ip = ip?;
 
             let sock = dev
                 .tcp_connect((ip, addr.1).into())
@@ -129,7 +131,7 @@ impl Device {
 
         future_into_py(py, async move {
             let ip = dev.ipv4_addr().await.map_err(py_value_err)?;
-            Ok(ip.to_string())
+            Ok(ip)
         })
     }
 
@@ -139,13 +141,13 @@ impl Device {
 
         future_into_py(py, async move {
             let ip = dev.ipv6_addr().await.map_err(py_value_err)?;
-            Ok(ip.to_string())
+            Ok(ip)
         })
     }
 }
 
-fn sockaddr_as_tuple(s: SocketAddr) -> (String, u16) {
-    (s.ip().to_string(), s.port())
+fn sockaddr_as_tuple(s: SocketAddr) -> (IpAddr, u16) {
+    (s.ip(), s.port())
 }
 
 fn py_value_err(e: impl ToString) -> PyErr {

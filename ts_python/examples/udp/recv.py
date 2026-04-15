@@ -13,7 +13,7 @@ async def main(auth_key: str, bind_port: int) -> None:
     # Bind a UDP socket on this device's IPv4 address:
     tailnet_ipv4 = await dev.ipv4_addr()
     udp_sock = await dev.udp_bind((tailnet_ipv4, bind_port))
-    print(f"[{tailnet_ipv4}:{bind_port}] udp bound, local endpoint: {udp_sock.local_endpoint_addr()}")
+    print(f"[{tailnet_ipv4}:{bind_port}] udp bound, local endpoint: {udp_sock.local_addr()}")
 
     # Wait for a message and print it, then repeat.
     count = 0

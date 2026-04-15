@@ -16,7 +16,7 @@ async def main(auth_key: str, peer_ip: str, peer_port: int) -> None:
     # Bind a UDP socket on this device's IPv4 address:
     tailnet_ipv4 = await dev.ipv4_addr()
     udp_sock = await dev.udp_bind((tailnet_ipv4, BIND_PORT))
-    print(f"[{tailnet_ipv4}:{BIND_PORT}] udp bound, local endpoint: {udp_sock.local_endpoint_addr()}")
+    print(f"[{tailnet_ipv4}:{BIND_PORT}] udp bound, local endpoint: {udp_sock.local_addr()}")
 
     # Send a message to the peer every second.
     count = 0

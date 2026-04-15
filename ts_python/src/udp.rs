@@ -1,13 +1,10 @@
-use core::{
-    net::{IpAddr, SocketAddr},
-    str::FromStr,
-};
+use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use pyo3::{Python, pyclass, pymethods};
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::{PyFut, py_value_err, sockaddr_as_tuple};
+use crate::{PyFut, ip_or_str::IpRepr, py_value_err, sockaddr_as_tuple};
 
 /// A tailscale UDP socket.
 #[pyclass(frozen, module = "_internal")]
@@ -21,10 +18,10 @@ impl UdpSocket {
     ///
     /// The address argument is currently expected to adopt the 2-tuple form (host, port),
     /// where host is strictly an IP address -- DNS lookup is not yet supported.
-    pub fn sendto<'p>(&self, py: Python<'p>, addr: (&str, u16), msg: &[u8]) -> PyFut<'p> {
+    pub fn sendto<'p>(&self, py: Python<'p>, addr: (IpRepr, u16), msg: &[u8]) -> PyFut<'p> {
         let (ip, port) = addr;
 
-        let addr = IpAddr::from_str(ip)?;
+        let addr = ip.try_into()?;
         let socket_addr = SocketAddr::new(addr, port);
         let msg = msg.to_vec();
 
@@ -54,7 +51,7 @@ impl UdpSocket {
     }
 
     /// Get the local endpoint this socket is bound to.
-    pub fn local_endpoint_addr(&self) -> (String, u16) {
+    pub fn local_addr(&self) -> (IpAddr, u16) {
         sockaddr_as_tuple(self.sock.local_addr())
     }
 

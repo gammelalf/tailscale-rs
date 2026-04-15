@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use pyo3::{PyResult, Python, exceptions::PyOSError, pyclass, pymethods};
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -35,7 +35,7 @@ impl TcpListener {
     }
 
     /// Get the local endpoint this TCP listener is listening on.
-    pub fn local_endpoint_addr(&self) -> (String, u16) {
+    pub fn local_addr(&self) -> (IpAddr, u16) {
         sockaddr_as_tuple(self.listener.local_addr())
     }
 
@@ -74,12 +74,12 @@ impl TcpStream {
     }
 
     /// Get the local endpoint this socket is bound to.
-    pub fn local_endpoint_addr(&self) -> (String, u16) {
+    pub fn local_addr(&self) -> (IpAddr, u16) {
         sockaddr_as_tuple(self.sock.local_addr())
     }
 
     /// Get the remote endpoint this socket is connected to.
-    pub fn remote_endpoint_addr(&self) -> (String, u16) {
+    pub fn remote_addr(&self) -> (IpAddr, u16) {
         sockaddr_as_tuple(self.sock.remote_addr())
     }
 
