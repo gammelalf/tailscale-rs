@@ -2,14 +2,21 @@ use core::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
 };
+use std::sync::Arc;
 
-use pyo3::{Python, pymethods};
+use pyo3::{Python, pyclass, pymethods};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{PyFut, py_value_err, sockaddr_as_tuple};
 
+/// A tailscale UDP socket.
+#[pyclass(frozen)]
+pub struct UdpSocket {
+    pub(crate) sock: Arc<ts::UdpSocket>,
+}
+
 #[pymethods]
-impl crate::tailscale::UdpSocket {
+impl UdpSocket {
     /// Send a datagram to the given address.
     ///
     /// The address argument is currently expected to adopt the 2-tuple form (host, port),

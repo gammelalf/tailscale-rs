@@ -1,12 +1,24 @@
 use std::sync::Arc;
 
-use pyo3::{PyResult, Python, exceptions::PyOSError, pymethods};
+use pyo3::{PyResult, Python, exceptions::PyOSError, pyclass, pymethods};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{PyFut, py_value_err, sockaddr_as_tuple};
 
+/// A TCP listen socket.
+#[pyclass(frozen, module = "tailscale")]
+pub struct TcpListener {
+    pub(crate) listener: Arc<ts::TcpListener>,
+}
+
+/// An established TCP stream.
+#[pyclass(frozen, module = "tailscale")]
+pub struct TcpStream {
+    pub(crate) sock: Arc<ts::TcpStream>,
+}
+
 #[pymethods]
-impl crate::tailscale::TcpListener {
+impl TcpListener {
     /// Accept a new incoming connection.
     ///
     /// Blocks indefinitely until a connection is ready to be accepted.
@@ -16,7 +28,7 @@ impl crate::tailscale::TcpListener {
         future_into_py(py, async move {
             let stream = sock.accept().await.map_err(py_value_err)?;
 
-            Ok(crate::tailscale::TcpStream {
+            Ok(TcpStream {
                 sock: Arc::new(stream),
             })
         })
@@ -33,7 +45,7 @@ impl crate::tailscale::TcpListener {
 }
 
 #[pymethods]
-impl crate::tailscale::TcpStream {
+impl TcpStream {
     /// Send bytes to the stream, returning the number of bytes transmitted.
     ///
     /// Always sends at least one byte if not an error.

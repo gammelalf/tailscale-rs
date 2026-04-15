@@ -2,7 +2,7 @@
 
 use core::str::FromStr;
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Once},
 };
 
@@ -16,20 +16,16 @@ type PyFut<'p> = PyResult<Bound<'p, PyAny>>;
 mod tcp;
 mod udp;
 
-// NOTE(npry): we want to declare our types inside the `tailscale` module so that printing them or
-// calling python's `help` reports that their types are `tailscale.*`, rather than `builtin.*`,
-// which is what they show if declared outside a `pymodule`, even if reexported from one.
-//
-// The module organization is awkward because proc-macro annotation on file modules is
-// currently unstable: https://github.com/rust-lang/rust/issues/54727. Ideally we'd put `tailscale`
-// in `tailscale.rs` and make `udp` and `tcp` submodules of it, but that currently doesn't work.
-
 /// Tailscale API.
 #[pymodule]
 pub mod tailscale {
-    use std::net::IpAddr;
-
     use super::*;
+    #[pymodule_export]
+    use crate::{
+        Device,
+        tcp::{TcpListener, TcpStream},
+        udp::UdpSocket,
+    };
 
     /// Connect to tailscale using the specified config file and optional auth key.
     #[pyfunction]
@@ -54,115 +50,97 @@ pub mod tailscale {
             Ok(Device { dev: Arc::new(dev) })
         })
     }
+}
 
-    /// Tailscale client.
-    #[pyclass(frozen)]
-    pub struct Device {
-        dev: Arc<ts::Device>,
+/// Tailscale client.
+#[pyclass(frozen, module = "tailscale")]
+pub struct Device {
+    dev: Arc<ts::Device>,
+}
+
+#[pymethods]
+impl Device {
+    /// Bind a new UDP socket on the given `addr`.
+    ///
+    /// `addr` must be given as (host, port). Presently, `host` must be an IP.
+    pub fn udp_bind<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+        let dev = self.dev.clone();
+        let ip = IpAddr::from_str(addr.0);
+
+        future_into_py(py, async move {
+            let ip = ip.map_err(py_value_err)?;
+
+            let sock = dev
+                .udp_bind((ip, addr.1).into())
+                .await
+                .map_err(py_value_err)?;
+
+            Ok(udp::UdpSocket {
+                sock: Arc::new(sock),
+            })
+        })
     }
 
-    /// A TCP listen socket.
-    #[pyclass(frozen)]
-    pub struct TcpListener {
-        pub(crate) listener: Arc<ts::TcpListener>,
+    /// Bind a new TCP listen socket on the given `addr` and `port`.
+    ///
+    /// `addr` must be given as (host, port). Presently, `host` must be an IP.
+    pub fn tcp_listen<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+        let dev = self.dev.clone();
+        let ip = IpAddr::from_str(addr.0);
+
+        future_into_py(py, async move {
+            let ip = ip.map_err(py_value_err)?;
+
+            let listener = dev
+                .tcp_listen((ip, addr.1).into())
+                .await
+                .map_err(py_value_err)?;
+
+            Ok(tcp::TcpListener {
+                listener: Arc::new(listener),
+            })
+        })
     }
 
-    /// An established TCP stream.
-    #[pyclass(frozen)]
-    pub struct TcpStream {
-        pub(crate) sock: Arc<ts::TcpStream>,
+    /// Create a new TCP connection to the given `addr`.
+    ///
+    /// `addr` must be given as (host, port). Presently, `host` must be an IP.
+    pub fn tcp_connect<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
+        let dev = self.dev.clone();
+        let ip = IpAddr::from_str(addr.0);
+
+        future_into_py(py, async move {
+            let ip = ip.map_err(py_value_err)?;
+
+            let sock = dev
+                .tcp_connect((ip, addr.1).into())
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+            Ok(tcp::TcpStream {
+                sock: Arc::new(sock),
+            })
+        })
     }
 
-    /// A tailscale UDP socket.
-    #[pyclass(frozen)]
-    pub struct UdpSocket {
-        pub(crate) sock: Arc<ts::UdpSocket>,
+    /// Get the device's IPv4 tailnet address.
+    pub fn ipv4<'p>(&self, py: Python<'p>) -> PyFut<'p> {
+        let dev = self.dev.clone();
+
+        future_into_py(py, async move {
+            let ip = dev.ipv4().await.map_err(py_value_err)?;
+            Ok(ip.to_string())
+        })
     }
 
-    #[pymethods]
-    impl Device {
-        /// Bind a new UDP socket on the given `addr`.
-        ///
-        /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-        pub fn udp_bind<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
-            let dev = self.dev.clone();
-            let ip = IpAddr::from_str(addr.0);
+    /// Get the device's IPv6 tailnet address.
+    pub fn ipv6<'p>(&self, py: Python<'p>) -> PyFut<'p> {
+        let dev = self.dev.clone();
 
-            future_into_py(py, async move {
-                let ip = ip.map_err(py_value_err)?;
-
-                let sock = dev
-                    .udp_bind((ip, addr.1).into())
-                    .await
-                    .map_err(py_value_err)?;
-
-                Ok(UdpSocket {
-                    sock: Arc::new(sock),
-                })
-            })
-        }
-
-        /// Bind a new TCP listen socket on the given `addr` and `port`.
-        ///
-        /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-        pub fn tcp_listen<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
-            let dev = self.dev.clone();
-            let ip = IpAddr::from_str(addr.0);
-
-            future_into_py(py, async move {
-                let ip = ip.map_err(py_value_err)?;
-
-                let listener = dev
-                    .tcp_listen((ip, addr.1).into())
-                    .await
-                    .map_err(py_value_err)?;
-
-                Ok(TcpListener {
-                    listener: Arc::new(listener),
-                })
-            })
-        }
-
-        /// Create a new TCP connection to the given `addr`.
-        ///
-        /// `addr` must be given as (host, port). Presently, `host` must be an IP.
-        pub fn tcp_connect<'p>(&self, py: Python<'p>, addr: (&str, u16)) -> PyFut<'p> {
-            let dev = self.dev.clone();
-            let ip = IpAddr::from_str(addr.0);
-
-            future_into_py(py, async move {
-                let ip = ip.map_err(py_value_err)?;
-
-                let sock = dev
-                    .tcp_connect((ip, addr.1).into())
-                    .await
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-                Ok(TcpStream {
-                    sock: Arc::new(sock),
-                })
-            })
-        }
-
-        /// Get the device's IPv4 tailnet address.
-        pub fn ipv4<'p>(&self, py: Python<'p>) -> PyFut<'p> {
-            let dev = self.dev.clone();
-
-            future_into_py(py, async move {
-                let ip = dev.ipv4().await.map_err(py_value_err)?;
-                Ok(ip.to_string())
-            })
-        }
-
-        /// Get the device's IPv6 tailnet address.
-        pub fn ipv6<'p>(&self, py: Python<'p>) -> PyFut<'p> {
-            let dev = self.dev.clone();
-
-            future_into_py(py, async move {
-                let ip = dev.ipv6().await.map_err(py_value_err)?;
-                Ok(ip.to_string())
-            })
-        }
+        future_into_py(py, async move {
+            let ip = dev.ipv6().await.map_err(py_value_err)?;
+            Ok(ip.to_string())
+        })
     }
 }
 
