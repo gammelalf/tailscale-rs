@@ -68,6 +68,7 @@ enum AsyncReadState {
     ReadBody {
         ty: ControlMessageType,
         len: usize,
+        bytes_read: usize,
         body: PacketMut,
     },
     ReturnToCaller {
@@ -116,38 +117,49 @@ impl<Conn: AsyncRead> AsyncRead for NoiseIo<Conn> {
                     *pin_self.rx_state = AsyncReadState::ReadBody {
                         ty: hdr.typ,
                         len: hdr.len(),
+                        bytes_read: 0,
                         body: PacketMut::new(hdr.len()),
                     };
                 }
-                AsyncReadState::ReadBody { ty, len, body } => {
+                AsyncReadState::ReadBody {
+                    ty,
+                    len,
+                    bytes_read,
+                    body,
+                } => {
                     let ty = *ty;
-                    let len = *len;
-                    let mut rb = ReadBuf::new(body.as_mut());
+                    let mut rb = ReadBuf::new(&mut body[*bytes_read..]);
                     core::task::ready!(pin_self.conn.as_mut().poll_read(cx, &mut rb)?);
 
-                    let bytes_read = rb.filled_mut().len();
+                    let new_bytes_read = rb.filled_mut().len();
                     // Per the docs for `AsyncRead::poll_read`, a return value of 0 indicates we've
                     // reached EOF, or the ReadBuf had a capacity of 0 - in either case, forward
                     // the result to the caller to handle.
-                    if bytes_read == 0 {
+                    if new_bytes_read == 0 {
                         tracing::trace!(
                             "poll_read: ReadBody({ty:?}): got EOF when reading packet body"
                         );
                         return Poll::Ready(Ok(()));
                     }
+                    *bytes_read += new_bytes_read;
 
-                    if body.len() < len {
+                    if *bytes_read < *len {
                         tracing::trace!(
-                            "poll_read: ReadBody({ty:?}): read {bytes_read} bytes, have {}/{len} bytes of body",
-                            body.len()
+                            "poll_read: ReadBody({ty:?}): read {new_bytes_read} bytes, have {bytes_read}/{len} bytes of body",
                         );
                         continue;
                     }
 
-                    tracing::trace!("poll_read: ReadBody({ty:?}): have full message body, parsing");
+                    tracing::trace!(
+                        "poll_read: ReadBody({ty:?}): have full message body, received: {}",
+                        body.iter()
+                            .hexdump(Case::Lower)
+                            .flatten()
+                            .collect::<String>()
+                    );
                     match ty {
                         ControlMessageType::Record => {
-                            if body.len() != len {
+                            if body.len() != *len {
                                 let err = io::Error::new(
                                     ErrorKind::InvalidData,
                                     format!(
@@ -157,7 +169,7 @@ impl<Conn: AsyncRead> AsyncRead for NoiseIo<Conn> {
                                 );
                                 Err(err)?;
                             }
-                            let body = match pin_self.rx.decrypt_in_place(body.as_mut(), len) {
+                            let body = match pin_self.rx.decrypt_in_place(body.as_mut(), *len) {
                                 Ok(plaintext_len) => {
                                     let packet = body.split_to(plaintext_len);
                                     tracing::trace!(
