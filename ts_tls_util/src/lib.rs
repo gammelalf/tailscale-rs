@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, LazyLock};
 
+use rustls_platform_verifier::ConfigVerifierExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::{
     TlsConnector,
@@ -15,12 +16,6 @@ mod insecure;
 
 #[cfg(feature = "insecure")]
 pub use insecure::connect_insecure;
-
-static ROOT_CERT_STORE: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
-    Arc::new(RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.into(),
-    })
-});
 
 /// Establishes a TLS stream with a server over an existing connection.
 ///
@@ -45,9 +40,7 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
     // TODO(npry): custom tls cert verifier to support commonname overrides and self-signed certs
-    let mut rustls_config = ClientConfig::builder()
-        .with_root_certificates(ROOT_CERT_STORE.clone())
-        .with_no_client_auth();
+    let mut rustls_config = ClientConfig::with_platform_verifier().unwrap();
 
     rustls_config
         .alpn_protocols
